@@ -7,7 +7,7 @@ before_install:
   - docker build -t docker4klud/react-test -f ./client/Dockerfile.dev ./client
 
 script: 
-  - docker run docker4klud/react-test npm test -- --coverage
+  - docker run -e CI=true docker4klud/react-test npm test -- --coverage
 
 after_success: 
   - docker build -t docker4klud/multi-client ./client

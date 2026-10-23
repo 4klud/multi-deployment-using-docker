@@ -23,3 +23,16 @@ after_success:
   - docker push docker4klud/multi-nginx
   - docker push docker4klud/multi-server
   - docker push docker4klud/multi-worker
+
+deploy:
+  provider: elasticbeanstalk
+  region: "us-west-2" 
+  app: "multi-docker"
+  env: "MultiDocker-env"
+  bucket_name: "elasticbeanstalk-us-west-2-625980020286"
+  bucket_path: "multi-docker"
+  on:
+    branch: master
+  access_key_id: $AWS_ACCESS_KEY
+  secret_access_key: $AWS_SECRET_KEY  
+  

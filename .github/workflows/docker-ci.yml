@@ -1,0 +1,122 @@
+
+name: Docker CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  docker-integration-tests:
+    name: Docker Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci_test_password
+      POSTGRES_DB: postgres
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build Docker images
+        run: docker compose build
+
+      - name: Start application
+        run: docker compose up -d --wait --wait-timeout 180
+
+      - name: Wait for API
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent \
+              http://localhost:3050/api/ \
+              | grep -qx "Hi"; then
+              echo "API is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "API did not become ready"
+          exit 1
+
+      - name: Test PostgreSQL
+        run: |
+          docker compose exec -T postgres \
+            pg_isready -U postgres -d postgres
+
+      - name: Test Redis
+        run: |
+          result=$(docker compose exec -T redis redis-cli ping)
+          test "$result" = "PONG"
+
+      - name: Test Fibonacci workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response=$(curl --fail --silent \
+            -X POST http://localhost:3050/api/values \
+            -H "Content-Type: application/json" \
+            -d '{"index":10}')
+
+          echo "$response" | jq -e '.working == true'
+
+          success=false
+
+          for attempt in $(seq 1 30); do
+            result=$(curl --fail --silent \
+              http://localhost:3050/api/values/current)
+
+            if echo "$result" | jq -e '."10" == "89"' >/dev/null; then
+              success=true
+              break
+            fi
+
+            sleep 2
+          done
+
+          test "$success" = true
+
+          curl --fail --silent \
+            http://localhost:3050/api/values/all \
+            | jq -e 'any(.[]; .number == 10)'
+
+          docker compose exec -T postgres \
+            psql -U postgres -d postgres \
+            -tAc 'SELECT COUNT(*) FROM public."values" WHERE number=10;' \
+            | grep -qx '1'
+
+          docker compose exec -T redis \
+            redis-cli --raw HGET values 10 \
+            | grep -qx '89'
+
+      - name: Test invalid input
+        run: |
+          status=$(curl --silent --output /dev/null \
+            --write-out "%{http_code}" \
+            -X POST http://localhost:3050/api/values \
+            -H "Content-Type: application/json" \
+            -d '{"index":41}')
+
+          test "$status" = "422"
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail=150
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v --remove-orphans
